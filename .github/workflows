@@ -1,0 +1,70 @@
+name: Sync from upstream (cmliu/edgetunnel)
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # 每天 03:00 UTC 自动同步
+  workflow_dispatch:
+    inputs:
+      sync_mode:
+        description: '同步模式：hard_reset（覆盖为上游）或 merge（尝试合并）'
+        required: true
+        default: 'hard_reset'
+        type: choice
+        options:
+          - hard_reset
+          - merge
+
+permissions:
+  contents: write # 允许推送到当前仓库
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream https://github.com/cmliu/edgetunnel.git || true
+          git fetch --all --prune
+
+      - name: Determine branches
+        id: vars
+        env:
+          TARGET_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -e
+          # 判定上游默认分支 main/master
+          if git ls-remote --exit-code --heads upstream main >/dev/null 2>&1; then
+            UPSTREAM_BRANCH=main
+          else
+            UPSTREAM_BRANCH=master
+          fi
+          echo "upstream_branch=$UPSTREAM_BRANCH" >> "$GITHUB_OUTPUT"
+          # 目标分支使用当前仓库默认分支，默认为 main
+          echo "target_branch=${TARGET_BRANCH:-main}" >> "$GITHUB_OUTPUT"
+
+      - name: Git identity
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Sync by hard reset (mirror upstream)
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.sync_mode == 'hard_reset' }}
+        run: |
+          set -e
+          git checkout "${{ steps.vars.outputs.target_branch }}"
+          git reset --hard "upstream/${{ steps.vars.outputs.upstream_branch }}"
+          git push origin "${{ steps.vars.outputs.target_branch }}" --force
+
+      - name: Sync by merge (non-destructive)
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sync_mode == 'merge' }}
+        run: |
+          set -e
+          git checkout "${{ steps.vars.outputs.target_branch }}"
+          # 尝试合并，不阻塞（有冲突时会失败但不中断，需人工处理）
+          git merge --no-edit "upstream/${{ steps.vars.outputs.upstream_branch }}" || true
+          git push origin "${{ steps.vars.outputs.target_branch }}" || true
